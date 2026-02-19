@@ -1,4 +1,4 @@
-import { Bot, Context, InputFile, Keyboard } from "grammy";
+import { Bot, Context, InputFile, Keyboard, InlineKeyboardButton } from "grammy";
 import { OpenCodeService } from "./opencode.service.js";
 import { ConfigService } from "../../services/config.service.js";
 import { OpenCodeServerService } from "../../services/opencode-server.service.js";
@@ -55,6 +55,7 @@ export class OpenCodeBot {
         // Handle inline button callbacks
         bot.callbackQuery("esc", AccessControlMiddleware.requireAccess, this.handleEscButton.bind(this));
         bot.callbackQuery("tab", AccessControlMiddleware.requireAccess, this.handleTabButton.bind(this));
+        bot.callbackQuery(/^opencode:/, AccessControlMiddleware.requireAccess, this.handleOpenCodeSelect.bind(this));
         
         // Handle file uploads (documents, photos, videos, audio, etc.)
         bot.on("message:document", AccessControlMiddleware.requireAccess, this.handleFileUpload.bind(this));
@@ -176,7 +177,48 @@ export class OpenCodeBot {
             const text = ctx.message?.text || "";
             const title = text.replace("/opencode", "").trim() || undefined;
 
-            // Create a new session
+            // If no title provided, show project selection keyboard
+            if (!title) {
+                const projects = await this.opencodeService.getProjects();
+
+                if (projects.length === 0) {
+                    const message = await ctx.reply("📂 No projects found. Please specify a title: /opencode <title>");
+                    await MessageUtils.scheduleMessageDeletion(
+                        ctx,
+                        message.message_id,
+                        this.configService.getMessageDeleteTimeout()
+                    );
+                    return;
+                }
+
+                // Build inline keyboard with projects (2 per row)
+                const keyboard: InlineKeyboardButton[][] = [];
+                for (let i = 0; i < projects.length; i += 2) {
+                    const row: InlineKeyboardButton[] = [];
+                    row.push({ text: projects[i].worktree, callback_data: `opencode:${projects[i].worktree}` });
+                    if (i + 1 < projects.length) {
+                        row.push({ text: projects[i + 1].worktree, callback_data: `opencode:${projects[i + 1].worktree}` });
+                    }
+                    keyboard.push(row);
+                }
+
+                // Add cancel button
+                keyboard.push([{ text: "❌ Cancel", callback_data: "opencode:cancel" }]);
+
+                const message = await ctx.reply("📂 <b>Select a project:</b>", {
+                    parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: keyboard }
+                });
+
+                await MessageUtils.scheduleMessageDeletion(
+                    ctx,
+                    message.message_id,
+                    this.configService.getMessageDeleteTimeout()
+                );
+                return;
+            }
+
+            // Create a new session with the provided title
             const statusMessage = await ctx.reply("🔄 Starting OpenCode session...");
 
             try {
@@ -534,6 +576,80 @@ export class OpenCodeBot {
         } catch (error) {
             await ctx.answerCallbackQuery("Error handling TAB");
             console.error("Error in handleTabButton:", error);
+        }
+    }
+
+    private async handleOpenCodeSelect(ctx: Context): Promise<void> {
+        try {
+            const callbackData = ctx.callbackQuery?.data;
+
+            if (!callbackData) {
+                await ctx.answerCallbackQuery("Error: no data");
+                return;
+            }
+
+            // Handle cancel
+            if (callbackData === "opencode:cancel") {
+                await ctx.answerCallbackQuery();
+                await ctx.editMessageText("❌ Cancelled");
+                return;
+            }
+
+            // Extract worktree from callback data (format: "opencode:/path/to/project")
+            const worktree = callbackData.replace("opencode:", "");
+
+            await ctx.answerCallbackQuery();
+
+            const userId = ctx.from?.id;
+            if (!userId) {
+                await ctx.editMessageText("❌ Unable to identify user");
+                return;
+            }
+
+            // Check if user already has an active session
+            if (this.opencodeService.hasActiveSession(userId)) {
+                await ctx.editMessageText("⚠️ Session already started. End it first with /endsession");
+                return;
+            }
+
+            // Edit the message to show we're starting
+            await ctx.editMessageText(`🔄 Starting session for: ${worktree}...`);
+
+            // Create session with worktree as title
+            try {
+                const userSession = await this.opencodeService.createSession(userId, worktree);
+
+                await ctx.editMessageText(
+                    "✅ Session started",
+                    {
+                        reply_markup: {
+                            inline_keyboard: [
+                                [
+                                    { text: "⏹️ ESC", callback_data: "esc" },
+                                    { text: "⇥ TAB", callback_data: "tab" }
+                                ]
+                            ]
+                        }
+                    }
+                );
+
+                // Store chat context and start event streaming
+                const chatId = ctx.callbackQuery?.message?.chat?.id;
+                const messageId = ctx.callbackQuery?.message?.message_id;
+                if (chatId && messageId) {
+                    this.opencodeService.updateSessionContext(userId, chatId, messageId);
+                }
+
+                // Start event streaming in background
+                this.opencodeService.startEventStream(userId, ctx).catch(error => {
+                    console.error("Event stream error:", error);
+                });
+            } catch (error) {
+                await ctx.editMessageText(ErrorUtils.createErrorMessage("start session", error));
+            }
+        } catch (error) {
+            await ctx.answerCallbackQuery("Error handling selection");
+            console.error("Error in handleOpenCodeSelect:", error);
         }
     }
 
