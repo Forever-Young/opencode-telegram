@@ -191,16 +191,10 @@ export class OpenCodeBot {
                     return;
                 }
 
-                // Build inline keyboard with projects (2 per row)
-                const keyboard: InlineKeyboardButton[][] = [];
-                for (let i = 0; i < projects.length; i += 2) {
-                    const row: InlineKeyboardButton[] = [];
-                    row.push({ text: projects[i].worktree, callback_data: `opencode:${projects[i].worktree}` });
-                    if (i + 1 < projects.length) {
-                        row.push({ text: projects[i + 1].worktree, callback_data: `opencode:${projects[i + 1].worktree}` });
-                    }
-                    keyboard.push(row);
-                }
+                // Build inline keyboard with projects (one per row)
+                const keyboard: InlineKeyboardButton[][] = projects.map(project => [
+                    { text: path.basename(project.worktree), callback_data: `opencode:${project.worktree}` }
+                ]);
 
                 // Add cancel button
                 keyboard.push([{ text: "❌ Cancel", callback_data: "opencode:cancel" }]);
