@@ -87,4 +87,7 @@ customcoders/
 
 core
 
+# Event files
+events/
+
 .env*

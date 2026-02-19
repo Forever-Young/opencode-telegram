@@ -1,7 +1,0 @@
-{
-  "type": "lsp.client.diagnostics",
-  "properties": {
-    "path": "/home/tom/telegramCoder/src/features/opencode/opencode.event-handlers.ts",
-    "serverID": "typescript"
-  }
-}

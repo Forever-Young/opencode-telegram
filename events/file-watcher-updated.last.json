@@ -1,7 +1,0 @@
-{
-  "type": "file.watcher.updated",
-  "properties": {
-    "file": "/home/tom/telegramCoder/.git/index.lock",
-    "event": "unlink"
-  }
-}
