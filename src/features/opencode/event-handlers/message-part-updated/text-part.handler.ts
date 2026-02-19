@@ -1,19 +1,39 @@
 import type { Context } from "grammy";
 import { formatAsHtml } from "../utils.js";
 
-let updateMessageId: number | null = null;
-let lastUpdateTime = 0;
-let deleteTimeout: NodeJS.Timeout | null = null;
-let latestText = "";
+// State map to track text streaming status per chat
+interface TextStreamState {
+    updateMessageId: number | null;
+    lastUpdateTime: number;
+    deleteTimeout: NodeJS.Timeout | null;
+    latestText: string;
+}
+
+const streamStates = new Map<number, TextStreamState>();
 
 export async function handleTextPart(ctx: Context, text: string): Promise<void> {
     try {
+        const chatId = ctx.chat?.id;
+        if (!chatId) return;
+
+        // Get or initialize state for this chat
+        let state = streamStates.get(chatId);
+        if (!state) {
+            state = {
+                updateMessageId: null,
+                lastUpdateTime: 0,
+                deleteTimeout: null,
+                latestText: ""
+            };
+            streamStates.set(chatId, state);
+        }
+
         const now = Date.now();
         
         // Clear existing delete timeout
-        if (deleteTimeout) {
-            clearTimeout(deleteTimeout);
-            deleteTimeout = null;
+        if (state.deleteTimeout) {
+            clearTimeout(state.deleteTimeout);
+            state.deleteTimeout = null;
         }
 
         // Limit to last 50 lines to prevent Telegram message size issues
@@ -23,38 +43,38 @@ export async function handleTextPart(ctx: Context, text: string): Promise<void> 
             : text;
 
         // Store the latest text (formatted as HTML)
-        latestText = formatAsHtml(limitedText);
+        state.latestText = formatAsHtml(limitedText);
 
-        if (!updateMessageId) {
+        if (!state.updateMessageId) {
             // First message - send new message
-            const sentMessage = await ctx.reply(latestText, { parse_mode: "HTML" });
-            updateMessageId = sentMessage.message_id;
-            lastUpdateTime = now; // Set time AFTER sending
+            const sentMessage = await ctx.reply(state.latestText, { parse_mode: "HTML" });
+            state.updateMessageId = sentMessage.message_id;
+            state.lastUpdateTime = now; // Set time AFTER sending
         } else {
             // Throttle: Check if 2 seconds have passed since last update
-            const timeSinceLastUpdate = now - lastUpdateTime;
+            const timeSinceLastUpdate = now - state.lastUpdateTime;
             if (timeSinceLastUpdate < 2000) {
                 // Skip this update (text is stored in latestText for later)
                 // Set timeout to delete after 5 seconds of no new updates
-                deleteTimeout = setTimeout(() => {
-                    deleteTextMessage(ctx);
+                state.deleteTimeout = setTimeout(() => {
+                    deleteTextMessage(chatId, ctx);
                 }, 5000);
                 return;
             }
             
             // Update immediately if enough time has passed
             await ctx.api.editMessageText(
-                ctx.chat!.id,
-                updateMessageId,
-                latestText,
+                chatId,
+                state.updateMessageId,
+                state.latestText,
                 { parse_mode: "HTML" }
             );
-            lastUpdateTime = now; // Update time AFTER sending
+            state.lastUpdateTime = now; // Update time AFTER sending
         }
 
         // Set timeout to delete message after 5 seconds of no updates
-        deleteTimeout = setTimeout(() => {
-            deleteTextMessage(ctx);
+        state.deleteTimeout = setTimeout(() => {
+            deleteTextMessage(chatId, ctx);
         }, 5000);
 
     } catch (error) {
@@ -62,11 +82,16 @@ export async function handleTextPart(ctx: Context, text: string): Promise<void> 
     }
 }
 
-async function deleteTextMessage(ctx: Context): Promise<void> {
+async function deleteTextMessage(chatId: number, ctx: Context): Promise<void> {
     try {
-        if (updateMessageId) {
-            await ctx.api.deleteMessage(ctx.chat!.id, updateMessageId);
-            updateMessageId = null;
+        const state = streamStates.get(chatId);
+        if (state && state.updateMessageId) {
+            await ctx.api.deleteMessage(chatId, state.updateMessageId);
+            state.updateMessageId = null;
+            state.deleteTimeout = null;
+            
+            // Cleanup map entry if empty
+            streamStates.delete(chatId);
         }
     } catch (error) {
         console.log("Error deleting text message:", error);

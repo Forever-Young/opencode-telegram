@@ -1,33 +1,53 @@
 import type { Context } from "grammy";
 
-let reasoningMessageId: number | null = null;
-let reasoningDeleteTimeout: NodeJS.Timeout | null = null;
+// State map to track reasoning message status per chat
+interface ReasoningState {
+    messageId: number | null;
+    deleteTimeout: NodeJS.Timeout | null;
+}
+
+const reasoningStates = new Map<number, ReasoningState>();
 
 export async function handleReasoningPart(ctx: Context): Promise<void> {
     try {
+        const chatId = ctx.chat?.id;
+        if (!chatId) return;
+
+        // Get or initialize state for this chat
+        let state = reasoningStates.get(chatId);
+        if (!state) {
+            state = { messageId: null, deleteTimeout: null };
+            reasoningStates.set(chatId, state);
+        }
+
         // Clear existing reasoning delete timeout
-        if (reasoningDeleteTimeout) {
-            clearTimeout(reasoningDeleteTimeout);
-            reasoningDeleteTimeout = null;
+        if (state.deleteTimeout) {
+            clearTimeout(state.deleteTimeout);
+            state.deleteTimeout = null;
         }
 
-        if (!reasoningMessageId) {
+        if (!state.messageId) {
             // Send reasoning message
-            const sentMessage = await ctx.reply("Reasoning");
-            reasoningMessageId = sentMessage.message_id;
+            const sentMessage = await ctx.reply("Reasoning...");
+            state.messageId = sentMessage.message_id;
         }
 
-        // Set timeout to delete message after 2.5 seconds (half of 5 seconds)
-        reasoningDeleteTimeout = setTimeout(async () => {
+        // Set timeout to delete message after 5 seconds
+        state.deleteTimeout = setTimeout(async () => {
             try {
-                if (reasoningMessageId) {
-                    await ctx.api.deleteMessage(ctx.chat!.id, reasoningMessageId);
-                    reasoningMessageId = null;
+                const currentState = reasoningStates.get(chatId);
+                if (currentState && currentState.messageId) {
+                    await ctx.api.deleteMessage(chatId, currentState.messageId);
+                    currentState.messageId = null;
+                    currentState.deleteTimeout = null;
+                    
+                    // Cleanup map entry if empty
+                    reasoningStates.delete(chatId);
                 }
             } catch (error) {
                 console.log("Error deleting reasoning message:", error);
             }
-        }, 2500);
+        }, 5000);
 
     } catch (error) {
         console.log("Error in reasoning part handler:", error);

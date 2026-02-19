@@ -1,28 +1,48 @@
 import type { Context } from "grammy";
 
-let toolMessageId: number | null = null;
-let toolDeleteTimeout: NodeJS.Timeout | null = null;
+// State map to track tool message status per chat
+interface ToolState {
+    messageId: number | null;
+    deleteTimeout: NodeJS.Timeout | null;
+}
+
+const toolStates = new Map<number, ToolState>();
 
 export async function handleToolPart(ctx: Context, part: any): Promise<void> {
     try {
-        // Clear existing tool delete timeout
-        if (toolDeleteTimeout) {
-            clearTimeout(toolDeleteTimeout);
-            toolDeleteTimeout = null;
+        const chatId = ctx.chat?.id;
+        if (!chatId) return;
+
+        // Get or initialize state for this chat
+        let state = toolStates.get(chatId);
+        if (!state) {
+            state = { messageId: null, deleteTimeout: null };
+            toolStates.set(chatId, state);
         }
 
-        if (!toolMessageId && part.tool) {
+        // Clear existing tool delete timeout
+        if (state.deleteTimeout) {
+            clearTimeout(state.deleteTimeout);
+            state.deleteTimeout = null;
+        }
+
+        if (!state.messageId && part.tool) {
             // Send tool name message
             const sentMessage = await ctx.reply(`🔧 ${part.tool}`);
-            toolMessageId = sentMessage.message_id;
+            state.messageId = sentMessage.message_id;
         }
 
         // Set timeout to delete message after 2.5 seconds (half of 5 seconds)
-        toolDeleteTimeout = setTimeout(async () => {
+        state.deleteTimeout = setTimeout(async () => {
             try {
-                if (toolMessageId) {
-                    await ctx.api.deleteMessage(ctx.chat!.id, toolMessageId);
-                    toolMessageId = null;
+                const currentState = toolStates.get(chatId);
+                if (currentState && currentState.messageId) {
+                    await ctx.api.deleteMessage(chatId, currentState.messageId);
+                    currentState.messageId = null;
+                    currentState.deleteTimeout = null;
+                    
+                    // Cleanup map entry if empty
+                    toolStates.delete(chatId);
                 }
             } catch (error) {
                 console.log("Error deleting tool message:", error);
